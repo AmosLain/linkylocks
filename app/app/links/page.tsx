@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
@@ -15,118 +14,122 @@ type LinkRow = {
   created_at?: string;
 };
 
-function statusOf(l: LinkRow) {
-  if (l.is_active !== true) return { label: "Disabled", cls: "border-gray-200 bg-gray-50 text-gray-800" };
+function getStatus(l: LinkRow) {
+  if (l.is_active !== true) {
+    return { label: "Disabled", cls: "bg-gray-100 text-gray-800 border-gray-300" };
+  }
 
   const now = Date.now();
+
   if (l.expires_at) {
     const t = new Date(l.expires_at).getTime();
-    if (Number.isFinite(t) && t <= now) return { label: "Expired", cls: "border-amber-200 bg-amber-50 text-amber-900" };
+    if (!Number.isNaN(t) && t <= now) {
+      return { label: "Expired", cls: "bg-amber-50 text-amber-900 border-amber-300" };
+    }
   }
 
   if (l.max_clicks != null) {
     const clicks = l.click_count ?? 0;
-    if (clicks >= l.max_clicks) return { label: "Max reached", cls: "border-red-200 bg-red-50 text-red-900" };
+    if (clicks >= l.max_clicks) {
+      return { label: "Max clicks reached", cls: "bg-red-50 text-red-900 border-red-300" };
+    }
   }
 
-  return { label: "Active", cls: "border-green-200 bg-green-50 text-green-900" };
+  return { label: "Active", cls: "bg-green-50 text-green-900 border-green-300" };
 }
 
 export default function LinksPage() {
   const supabase = useMemo(() => createClient(), []);
-  const [items, setItems] = useState<LinkRow[]>([]);
-  const [err, setErr] = useState<string | null>(null);
+  const [links, setLinks] = useState<LinkRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  async function load() {
-    setErr(null);
+  async function loadLinks() {
     setLoading(true);
+    setError(null);
+
     try {
-      const { data: u, error: uErr } = await supabase.auth.getUser();
-      if (uErr) throw uErr;
-      const userId = u.user?.id;
-      if (!userId) throw new Error("Not logged in.");
+      const { data: userRes, error: userErr } = await supabase.auth.getUser();
+      if (userErr) throw userErr;
+
+      const userId = userRes.user?.id;
+      if (!userId) throw new Error("Not logged in");
 
       const { data, error } = await supabase
         .from("links")
-        .select("id,token,target_url,is_active,expires_at,max_clicks,click_count,created_at")
+        .select("id, token, target_url, is_active, expires_at, max_clicks, click_count, created_at")
         .eq("user_id", userId)
         .order("created_at", { ascending: false });
 
       if (error) throw error;
-      setItems((data as LinkRow[]) ?? []);
+
+      setLinks((data as LinkRow[]) ?? []);
     } catch (e: any) {
-      setErr(e?.message ?? "Failed to load links.");
+      setError(e?.message ?? "Failed to load links");
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    load();
+    loadLinks();
 
-    // ✅ realtime: refresh when link rows update (click_count changes)
-    const channel = supabase
-      .channel("links-live")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "links" },
-        () => {
-          load();
-        }
-      )
-      .subscribe();
-
-    // ✅ fallback polling (in case realtime isn’t enabled)
-    const timer = setInterval(load, 5000);
-
-    return () => {
-      supabase.removeChannel(channel);
-      clearInterval(timer);
-    };
+    // Poll every 5 seconds so click counts update
+    const timer = setInterval(loadLinks, 5000);
+    return () => clearInterval(timer);
   }, []);
 
   return (
     <main className="mx-auto max-w-3xl px-4 py-8">
-      <div className="flex items-center justify-between gap-3">
+      <div className="mb-6 flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Your links</h1>
+
         <div className="flex gap-2">
           <button
-            onClick={load}
+            onClick={loadLinks}
             className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm text-gray-900"
           >
             Refresh
           </button>
-          <Link className="rounded-lg bg-black px-4 py-2 text-white" href="/app/new">
+
+          <a
+            href="/app/new"
+            className="rounded-lg bg-black px-4 py-2 text-sm text-white"
+          >
             New link
-          </Link>
+          </a>
         </div>
       </div>
 
-      {err && (
-        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-          {err}
+      {error && (
+        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+          {error}
         </div>
       )}
 
       {loading ? (
-        <p className="mt-6 text-gray-600">Loading…</p>
-      ) : items.length === 0 ? (
-        <p className="mt-6 text-gray-600">No links yet. Create one.</p>
+        <p className="text-gray-600">Loading…</p>
+      ) : links.length === 0 ? (
+        <p className="text-gray-600">No links yet.</p>
       ) : (
-        <div className="mt-6 space-y-3">
-          {items.map((l) => {
-            const st = statusOf(l);
+        <div className="space-y-3">
+          {links.map((l) => {
+            const status = getStatus(l);
             const shortPath = `/l/${l.token}`;
             const clicks = l.click_count ?? 0;
 
             return (
-              <div key={l.id} className="rounded-xl border border-gray-200 bg-white p-4">
+              <div
+                key={l.id}
+                className="rounded-xl border border-gray-200 bg-white p-4"
+              >
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${st.cls}`}>
-                        {st.label}
+                      <span
+                        className={`inline-flex rounded-full border px-2 py-0.5 text-xs ${status.cls}`}
+                      >
+                        {status.label}
                       </span>
 
                       <span className="text-sm text-gray-700">
@@ -142,32 +145,41 @@ export default function LinksPage() {
                     </div>
 
                     <div className="mt-2 break-all text-sm">
-                      <span className="font-medium text-gray-900">Short:</span>{" "}
-                      <a className="text-blue-600 underline" href={shortPath} target="_blank" rel="noreferrer">
+                      <span className="font-medium">Short:</span>{" "}
+                      <a
+                        href={shortPath}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-blue-600 underline"
+                      >
                         {shortPath}
                       </a>
                     </div>
 
                     <div className="mt-1 break-all text-xs text-gray-500">
-                      <span className="font-medium">Target:</span> {l.target_url}
+                      <span className="font-medium">Target:</span>{" "}
+                      {l.target_url}
                     </div>
                   </div>
 
                   <div className="flex gap-2">
                     <button
-                      className="rounded-lg border border-gray-300 px-3 py-2 text-sm"
                       onClick={async () => {
-                        await navigator.clipboard.writeText(`${window.location.origin}${shortPath}`);
+                        await navigator.clipboard.writeText(
+                          `${window.location.origin}${shortPath}`
+                        );
                       }}
+                      className="rounded-lg border border-gray-300 px-3 py-2 text-sm"
                     >
                       Copy
                     </button>
 
+                    {/* IMPORTANT: normal <a>, no Next prefetch */}
                     <a
-                      className="rounded-lg bg-black px-3 py-2 text-sm text-white"
                       href={shortPath}
                       target="_blank"
                       rel="noreferrer"
+                      className="rounded-lg bg-black px-3 py-2 text-sm text-white"
                     >
                       Open
                     </a>
