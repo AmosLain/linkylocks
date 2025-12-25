@@ -1,26 +1,92 @@
+/* =========================================================
+   Tailwind base import (Tailwind v4)
+   ========================================================= */
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* =========================================================
+   Global resets / base
+   ========================================================= */
+html,
+body {
+  height: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  margin: 0;
+  background-color: #f9fafb;
+  color: #111827;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* =========================================================
+   LinkyLocks UX HYGIENE — INPUT VISIBILITY FIX
+   ========================================================= */
+
+/* Force readable inputs everywhere */
+input,
+textarea,
+select {
+  color: #111827 !important;
+  background-color: #ffffff !important;
+  border-color: #d1d5db;
+}
+
+/* Placeholders must be visible */
+input::placeholder,
+textarea::placeholder {
+  color: #6b7280 !important;
+  opacity: 1;
+}
+
+/* Focus state (clear but not aggressive) */
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: #111827;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.15);
+}
+
+/* Autofill fix (Chrome / Edge) */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #111827 !important;
+  box-shadow: 0 0 0px 1000px #ffffff inset !important;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+/* =========================================================
+   Dark background safety (if you add dark sections later)
+   ========================================================= */
+.dark input,
+.dark textarea,
+.dark select {
+  background-color: #ffffff !important;
+  color: #111827 !important;
+}
+
+/* =========================================================
+   Buttons — consistent baseline
+   ========================================================= */
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* =========================================================
+   Utility polish
+   ========================================================= */
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
 }
