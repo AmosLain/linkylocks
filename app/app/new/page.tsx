@@ -1,143 +1,186 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import { nanoid } from "nanoid";
+
+function toIsoOrNull(datetimeLocal: string): string | null {
+  // datetime-local gives "YYYY-MM-DDTHH:MM"
+  if (!datetimeLocal) return null;
+  const d = new Date(datetimeLocal);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString(); // store as timestamptz
+}
+
+function parseMaxClicksOrNull(v: string): number | null {
+  const raw = v.trim();
+  if (!raw) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  const intN = Math.floor(n);
+  if (intN < 1) return null;
+  return intN;
+}
+
+function genToken(len = 10) {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  let out = "";
+  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
+}
 
 export default function NewLinkPage() {
+  const supabase = useMemo(() => createClient(), []);
   const router = useRouter();
-  const supabase = createClient();
 
   const [label, setLabel] = useState("");
-  const [url, setUrl] = useState("");
-  const [expiryType, setExpiryType] = useState<"none" | "time" | "opens">("none");
-  const [expiresAt, setExpiresAt] = useState("");
-  const [maxOpens, setMaxOpens] = useState("");
-  const [error, setError] = useState("");
+  const [targetUrl, setTargetUrl] = useState("");
+  const [maxClicks, setMaxClicks] = useState("");
+  const [expiresAtLocal, setExpiresAtLocal] = useState("");
 
-  const createLink = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [created, setCreated] = useState<string | null>(null);
 
-    if (!url.startsWith("http://") && !url.startsWith("https://")) {
-      return setError("URL must start with http:// or https://");
+  async function onCreate() {
+    setErr(null);
+    setCreated(null);
+
+    const url = targetUrl.trim();
+    if (!url) return setErr("Please enter a target URL.");
+    if (!/^https?:\/\//i.test(url)) return setErr("URL must start with http:// or https://");
+
+    const maxClicksNum = parseMaxClicksOrNull(maxClicks);
+    // If user typed something but it didn't parse => show error
+    if (maxClicks.trim() !== "" && maxClicksNum === null) {
+      return setErr("Max clicks must be a whole number (1 or more).");
     }
 
-    const token = nanoid(10);
+    const expiresIso = toIsoOrNull(expiresAtLocal);
 
-    // Get user_id
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    setLoading(true);
+    try {
+      const { data: userRes, error: userErr } = await supabase.auth.getUser();
+      if (userErr) throw userErr;
+      const userId = userRes.user?.id;
+      if (!userId) throw new Error("Not logged in.");
 
-    if (!user) {
-      return setError("Not logged in.");
+      // try a few times in case token collision happens
+      let token = genToken(10);
+      let lastError: any = null;
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        token = genToken(10);
+
+        const { error: insErr } = await supabase.from("links").insert({
+          user_id: userId,
+          label: label.trim() || null,
+          token,
+          target_url: url,
+          is_active: true,
+          click_count: 0,
+          max_clicks: maxClicksNum,      // ✅ THIS IS THE IMPORTANT ONE
+          expires_at: expiresIso,        // ✅ THIS IS THE IMPORTANT ONE
+        });
+
+        if (!insErr) {
+          setCreated(`${window.location.origin}/l/${token}`);
+          router.push("/app/links");
+          router.refresh();
+          return;
+        }
+
+        lastError = insErr;
+      }
+
+      throw lastError ?? new Error("Failed to create link.");
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to create link.");
+    } finally {
+      setLoading(false);
     }
-
-    const { error: insertError } = await supabase.from("links").insert({
-      user_id: user.id,
-      label,
-      token,
-      target_url: url,
-      expires_at: expiryType === "time" ? expiresAt : null,
-      max_opens: expiryType === "opens" ? parseInt(maxOpens) : null,
-    });
-
-    if (insertError) {
-      return setError(insertError.message);
-    }
-
-    router.push("/app/links");
-  };
+  }
 
   return (
-    <div className="bg-white p-8 rounded-xl shadow max-w-xl mx-auto">
-      <h1 className="text-3xl font-bold text-indigo-700 mb-6">Create New Link</h1>
-
-      <form onSubmit={createLink} className="space-y-4">
-        <div>
-          <label className="block mb-1">Label (optional)</label>
-          <input
-            type="text"
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
-            className="w-full border p-2 rounded"
-          />
-        </div>
-
-        <div>
-          <label className="block mb-1">Target URL *</label>
-          <input
-            type="text"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            required
-            className="w-full border p-2 rounded"
-          />
-        </div>
-
-        <div>
-          <label className="block font-medium mb-2">Expiry Settings</label>
-
-          <label className="block">
-            <input
-              type="radio"
-              checked={expiryType === "none"}
-              onChange={() => setExpiryType("none")}
-            />
-            <span className="ml-2">No expiry</span>
-          </label>
-
-          <label className="block mt-2">
-            <input
-              type="radio"
-              checked={expiryType === "time"}
-              onChange={() => setExpiryType("time")}
-            />
-            <span className="ml-2">Expire at date & time</span>
-          </label>
-
-          {expiryType === "time" && (
-            <input
-              type="datetime-local"
-              value={expiresAt}
-              onChange={(e) => setExpiresAt(e.target.value)}
-              className="w-full border p-2 rounded mt-2"
-              required
-            />
-          )}
-
-          <label className="block mt-2">
-            <input
-              type="radio"
-              checked={expiryType === "opens"}
-              onChange={() => setExpiryType("opens")}
-            />
-            <span className="ml-2">Expire after X opens</span>
-          </label>
-
-          {expiryType === "opens" && (
-            <input
-              type="number"
-              min="1"
-              value={maxOpens}
-              onChange={(e) => setMaxOpens(e.target.value)}
-              className="w-full border p-2 rounded mt-2"
-              required
-            />
-          )}
-        </div>
-
-        {error && <p className="text-red-600">{error}</p>}
-
-        <button
-          type="submit"
-          className="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+    <main className="mx-auto max-w-2xl px-6 py-10">
+      <div className="mb-6 flex items-center justify-between">
+        <h1 className="text-3xl font-extrabold tracking-tight text-indigo-600">New Link</h1>
+        <a
+          href="/app/links"
+          className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm text-gray-900"
         >
-          Create Link
-        </button>
-      </form>
-    </div>
+          ← Back
+        </a>
+      </div>
+
+      <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+        <div className="space-y-4">
+          <div>
+            <label className="mb-1 block text-sm font-semibold text-gray-800">Label (optional)</label>
+            <input
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="e.g. YouTube video, Landing page, etc."
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black/20"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-semibold text-gray-800">Target URL</label>
+            <input
+              value={targetUrl}
+              onChange={(e) => setTargetUrl(e.target.value)}
+              placeholder="https://example.com"
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black/20"
+            />
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-sm font-semibold text-gray-800">Max clicks (optional)</label>
+              <input
+                value={maxClicks}
+                onChange={(e) => setMaxClicks(e.target.value)}
+                placeholder="e.g. 2"
+                inputMode="numeric"
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black/20"
+              />
+              <p className="mt-1 text-xs text-gray-500">Leave empty = unlimited</p>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-sm font-semibold text-gray-800">Expiry date (optional)</label>
+              <input
+                type="datetime-local"
+                value={expiresAtLocal}
+                onChange={(e) => setExpiresAtLocal(e.target.value)}
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 focus:outline-none focus:ring-2 focus:ring-black/20"
+              />
+              <p className="mt-1 text-xs text-gray-500">Leave empty = never expires</p>
+            </div>
+          </div>
+
+          {err && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+              {err}
+            </div>
+          )}
+
+          {created && (
+            <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-900">
+              Created: <span className="break-all font-semibold">{created}</span>
+            </div>
+          )}
+
+          <button
+            onClick={onCreate}
+            disabled={loading}
+            className="w-full rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-60"
+          >
+            {loading ? "Creating..." : "Create Link"}
+          </button>
+        </div>
+      </div>
+    </main>
   );
 }
