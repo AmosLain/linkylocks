@@ -1,142 +1,183 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 import Link from "next/link";
-import { Plus, ExternalLink, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { createClient } from "@/lib/supabase/client";
 
-type LinkRecord = {
+type LinkRow = {
   id: string;
-  label: string | null;
   token: string;
   target_url: string;
-  is_active: boolean;
+  is_active: boolean | null;
   expires_at: string | null;
-  max_opens: number | null;
-  opens_count: number;
+  max_clicks: number | null;
+  click_count: number | null;
+  created_at?: string;
 };
 
+function statusOf(l: LinkRow) {
+  if (l.is_active !== true) return { label: "Disabled", cls: "border-gray-200 bg-gray-50 text-gray-800" };
+
+  const now = Date.now();
+  if (l.expires_at) {
+    const t = new Date(l.expires_at).getTime();
+    if (Number.isFinite(t) && t <= now) return { label: "Expired", cls: "border-amber-200 bg-amber-50 text-amber-900" };
+  }
+
+  if (l.max_clicks != null) {
+    const clicks = l.click_count ?? 0;
+    if (clicks >= l.max_clicks) return { label: "Max reached", cls: "border-red-200 bg-red-50 text-red-900" };
+  }
+
+  return { label: "Active", cls: "border-green-200 bg-green-50 text-green-900" };
+}
+
 export default function LinksPage() {
-  const supabase = createClient();
-  const [links, setLinks] = useState<LinkRecord[]>([]);
+  const supabase = useMemo(() => createClient(), []);
+  const [items, setItems] = useState<LinkRow[]>([]);
+  const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const loadLinks = async () => {
-    const { data } = await supabase
-      .from("links")
-      .select("*")
-      .order("created_at", { ascending: false });
+  async function load() {
+    setErr(null);
+    setLoading(true);
+    try {
+      const { data: u, error: uErr } = await supabase.auth.getUser();
+      if (uErr) throw uErr;
+      const userId = u.user?.id;
+      if (!userId) throw new Error("Not logged in.");
 
-    setLinks(data || []);
-    setLoading(false);
-  };
+      const { data, error } = await supabase
+        .from("links")
+        .select("id,token,target_url,is_active,expires_at,max_clicks,click_count,created_at")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false });
+
+      if (error) throw error;
+      setItems((data as LinkRow[]) ?? []);
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to load links.");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    loadLinks();
+    load();
+
+    // ✅ realtime: refresh when link rows update (click_count changes)
+    const channel = supabase
+      .channel("links-live")
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "links" },
+        () => {
+          load();
+        }
+      )
+      .subscribe();
+
+    // ✅ fallback polling (in case realtime isn’t enabled)
+    const timer = setInterval(load, 5000);
+
+    return () => {
+      supabase.removeChannel(channel);
+      clearInterval(timer);
+    };
   }, []);
 
-  const handleRevoke = async (id: string) => {
-    await supabase.from("links").update({ is_active: false }).eq("id", id);
-    loadLinks();
-  };
-
-  if (loading) return <p>Loading...</p>;
-
   return (
-    <div className="space-y-6">
-      <div className="flex justify-between items-center">
-        <h1 className="text-3xl font-bold text-indigo-700">My Links</h1>
-        <Link
-          href="/app/new"
-          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
-        >
-          <Plus className="w-4 h-4" />
-          New Link
-        </Link>
-      </div>
-
-      {links.length === 0 ? (
-        <div className="bg-white p-10 rounded-xl shadow text-center">
-          <p className="text-gray-700 mb-4">You haven't created any links yet.</p>
-          <Link
-            href="/app/new"
-            className="px-4 py-2 bg-indigo-600 text-white rounded-lg"
+    <main className="mx-auto max-w-3xl px-4 py-8">
+      <div className="flex items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold">Your links</h1>
+        <div className="flex gap-2">
+          <button
+            onClick={load}
+            className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm text-gray-900"
           >
-            Create Your First Link
+            Refresh
+          </button>
+          <Link className="rounded-lg bg-black px-4 py-2 text-white" href="/app/new">
+            New link
           </Link>
         </div>
-      ) : (
-        <div className="bg-white rounded-xl shadow p-6">
-          <table className="w-full">
-            <thead className="border-b text-gray-600 text-sm">
-              <tr>
-                <th className="py-2 text-left">Label</th>
-                <th className="py-2 text-left">Short Link</th>
-                <th className="py-2 text-left">Opens</th>
-                <th className="py-2 text-left">Status</th>
-                <th className="py-2"></th>
-              </tr>
-            </thead>
+      </div>
 
-            <tbody>
-              {links.map((link) => (
-                <tr key={link.id} className="border-b last:border-none">
-                  <td className="py-3">
-                    <div className="font-medium">{link.label || "Untitled"}</div>
-                    <div className="text-xs text-gray-500 truncate w-60">
-                      {link.target_url}
-                    </div>
-                  </td>
-
-                  <td className="py-3">
-                    <Link
-                      href={`/l/${link.token}`}
-                      className="text-indigo-600 hover:underline text-sm"
-                    >
-                      /l/{link.token}
-                    </Link>
-                  </td>
-
-                  <td className="py-3 text-sm">
-                    {link.opens_count}
-                    {link.max_opens ? ` / ${link.max_opens}` : ""}
-                  </td>
-
-                  <td className="py-3">
-                    {link.is_active ? (
-                      <span className="px-2 py-1 text-xs bg-green-200 text-green-800 rounded">
-                        Active
-                      </span>
-                    ) : (
-                      <span className="px-2 py-1 text-xs bg-gray-300 text-gray-800 rounded">
-                        Disabled
-                      </span>
-                    )}
-                  </td>
-
-                  <td className="py-3 text-right space-x-3">
-                    <Link
-                      href={`/l/${link.token}`}
-                      className="text-indigo-600 hover:text-indigo-800"
-                    >
-                      <ExternalLink className="w-4 h-4 inline" />
-                    </Link>
-
-                    {link.is_active && (
-                      <button
-                        onClick={() => handleRevoke(link.id)}
-                        className="text-red-600 hover:text-red-800"
-                      >
-                        <Trash2 className="w-4 h-4 inline" />
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {err && (
+        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+          {err}
         </div>
       )}
-    </div>
+
+      {loading ? (
+        <p className="mt-6 text-gray-600">Loading…</p>
+      ) : items.length === 0 ? (
+        <p className="mt-6 text-gray-600">No links yet. Create one.</p>
+      ) : (
+        <div className="mt-6 space-y-3">
+          {items.map((l) => {
+            const st = statusOf(l);
+            const shortPath = `/l/${l.token}`;
+            const clicks = l.click_count ?? 0;
+
+            return (
+              <div key={l.id} className="rounded-xl border border-gray-200 bg-white p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs ${st.cls}`}>
+                        {st.label}
+                      </span>
+
+                      <span className="text-sm text-gray-700">
+                        clicks: <b>{clicks}</b>
+                        {l.max_clicks != null ? ` / ${l.max_clicks}` : ""}
+                      </span>
+
+                      {l.expires_at && (
+                        <span className="text-sm text-gray-600">
+                          expires: {new Date(l.expires_at).toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="mt-2 break-all text-sm">
+                      <span className="font-medium text-gray-900">Short:</span>{" "}
+                      <a className="text-blue-600 underline" href={shortPath} target="_blank" rel="noreferrer">
+                        {shortPath}
+                      </a>
+                    </div>
+
+                    <div className="mt-1 break-all text-xs text-gray-500">
+                      <span className="font-medium">Target:</span> {l.target_url}
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <button
+                      className="rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                      onClick={async () => {
+                        await navigator.clipboard.writeText(`${window.location.origin}${shortPath}`);
+                      }}
+                    >
+                      Copy
+                    </button>
+
+                    <a
+                      className="rounded-lg bg-black px-3 py-2 text-sm text-white"
+                      href={shortPath}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open
+                    </a>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </main>
   );
 }
