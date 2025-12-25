@@ -33,11 +33,17 @@ export async function GET(req: Request, ctx: { params: Promise<{ token: string }
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-    if (!url || !serviceKey || !token) return expiredRedirect(req);
+    // 🔥 Minimal sanity: service_role keys are long JWTs (usually 150+ chars) and start with eyJ
+    if (!url || !serviceKey || serviceKey.length < 100 || !serviceKey.startsWith("eyJ")) {
+      console.error("BAD_SUPABASE_SERVICE_ROLE_KEY", {
+        hasUrl: !!url,
+        keyLen: serviceKey?.length,
+        keyStart: serviceKey ? serviceKey.slice(0, 8) : null,
+      });
+      return expiredRedirect(req);
+    }
 
-    const supabase = createClient(url, serviceKey, {
-      auth: { persistSession: false },
-    });
+    const supabase = createClient(url, serviceKey, { auth: { persistSession: false } });
 
     // Fetch (tolerate schemas without max_clicks)
     let link: LinkRow | null = null;
@@ -56,9 +62,13 @@ export async function GET(req: Request, ctx: { params: Promise<{ token: string }
           .select("token,target_url,is_active,expires_at,click_count")
           .eq("token", token)
           .maybeSingle<LinkRow>();
-        if (retry.error) return expiredRedirect(req);
+        if (retry.error) {
+          console.error("FETCH_ERROR_RETRY", retry.error);
+          return expiredRedirect(req);
+        }
         link = retry.data ?? null;
       } else {
+        console.error("FETCH_ERROR", first.error);
         return expiredRedirect(req);
       }
     } else {
@@ -74,12 +84,22 @@ export async function GET(req: Request, ctx: { params: Promise<{ token: string }
     if (inactive || expired || maxed) return expiredRedirect(req);
     if (!link.target_url) return expiredRedirect(req);
 
-    // ✅ Atomic-ish increment: read current then update; service role prevents RLS issues
+    // ✅ update click_count and LOG if it fails
     const nextCount = (link.click_count ?? 0) + 1;
-    await supabase.from("links").update({ click_count: nextCount }).eq("token", token);
+
+    const upd = await supabase
+      .from("links")
+      .update({ click_count: nextCount })
+      .eq("token", token);
+
+    if (upd.error) {
+      console.error("CLICK_COUNT_UPDATE_FAILED", upd.error);
+      // Still redirect, but now you'll see the reason in Vercel logs
+    }
 
     return NextResponse.redirect(link.target_url, 302);
-  } catch {
+  } catch (e) {
+    console.error("ROUTE_CRASH", e);
     return expiredRedirect(req);
   }
 }
