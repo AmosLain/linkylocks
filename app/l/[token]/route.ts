@@ -1,79 +1,124 @@
-import { NextRequest, NextResponse } from "next/server";
+// app/l/[token]/route.ts
+import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
-export const runtime = "nodejs";
+type LinkRow = {
+  token: string;
+  target_url: string;
+  is_active: boolean | null;
+  expires_at: string | null;
+  max_clicks?: number | null;
+  click_count: number | null;
+};
 
-// Service-role Supabase client for server-side redirect logic
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+function isExpired(expires_at: string | null): boolean {
+  if (!expires_at) return false;
+  const exp = new Date(expires_at).getTime();
+  return Number.isFinite(exp) && exp <= Date.now();
+}
 
-// Next.js 16 sometimes gives params as a Promise, so we support both.
-type Params =
-  | { token: string }
-  | Promise<{ token: string }>;
+function reachedMaxClicks(max_clicks: number | null | undefined, click_count: number | null): boolean {
+  if (max_clicks == null) return false;
+  return (click_count ?? 0) >= max_clicks;
+}
 
 export async function GET(
-  request: NextRequest,
-  context: { params: Params }
+  req: Request,
+  ctx: { params: Promise<{ token: string }> } // IMPORTANT: params is a Promise in your setup
 ) {
-  // Normalize params (await if needed)
-  const params =
-    "then" in context.params
-      ? await context.params
-      : context.params;
+  try {
+    // ✅ Correct: await params
+    const { token } = await ctx.params;
 
-  const token = params.token;
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-  // 1️⃣ Fetch link by token
-  const { data: link, error } = await supabase
-    .from("links")
-    .select(
-      "id, target_url, expires_at, max_clicks, click_count, is_active"
-    )
-    .eq("token", token)
-    .single();
+    console.log("HIT /l/[token]", token);
+    console.log("ENV CHECK", {
+      url,
+      serviceLen: serviceKey?.length,
+      serviceStart: serviceKey ? serviceKey.slice(0, 10) : null, // safe snippet
+    });
 
-  if (error || !link) {
-    // Unknown token → treat as expired/unavailable
-    return NextResponse.redirect(new URL("/expired", request.url));
-  }
-
-  const now = new Date();
-
-  const isTimeExpired =
-    link.expires_at && new Date(link.expires_at) < now;
-
-  const isMaxed =
-    link.max_clicks !== null &&
-    link.click_count !== null &&
-    link.click_count >= link.max_clicks;
-
-  // 2️⃣ If expired / maxed / inactive → redirect to expired page
-  if (!link.is_active || isTimeExpired || isMaxed) {
-    try {
-      await supabase
-        .from("links")
-        .update({ is_active: false })
-        .eq("id", link.id);
-    } catch {
-      // ignore update errors
+    if (!url || !serviceKey) {
+      console.error("Missing env vars: NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+      return NextResponse.redirect(new URL("/expired", req.url));
     }
 
-    return NextResponse.redirect(new URL("/expired", request.url));
-  }
+    const supabase = createClient(url, serviceKey, {
+      auth: { persistSession: false },
+    });
 
-  // 3️⃣ Increment click counter (best effort)
-  try {
-    await supabase
+    // ✅ Select only columns that exist safely:
+    // We'll request max_clicks but tolerate if it's not there by catching error.
+    let link: LinkRow | null = null;
+
+    const attempt = await supabase
       .from("links")
-      .update({ click_count: (link.click_count ?? 0) + 1 })
-      .eq("id", link.id);
-  } catch {
-    // ignore analytics errors
-  }
+      .select("token,target_url,is_active,expires_at,click_count,max_clicks")
+      .eq("token", token)
+      .maybeSingle<LinkRow>();
 
-  // 4️⃣ Redirect to the actual destination
-  return NextResponse.redirect(link.target_url);
+    if (attempt.error) {
+      // If max_clicks doesn't exist, retry without it
+      const msg = String(attempt.error.message || "");
+      console.error("Supabase fetch error (first attempt):", attempt.error);
+
+      if (msg.toLowerCase().includes("max_clicks") && msg.toLowerCase().includes("does not exist")) {
+        const retry = await supabase
+          .from("links")
+          .select("token,target_url,is_active,expires_at,click_count")
+          .eq("token", token)
+          .maybeSingle<LinkRow>();
+
+        if (retry.error) {
+          console.error("Supabase fetch error (retry):", retry.error);
+          return NextResponse.redirect(new URL("/expired", req.url));
+        }
+        link = retry.data ?? null;
+      } else {
+        return NextResponse.redirect(new URL("/expired", req.url));
+      }
+    } else {
+      link = attempt.data ?? null;
+    }
+
+    console.log("DB RESULT", link);
+
+    if (!link) {
+      console.warn("FAIL: token not found");
+      return NextResponse.redirect(new URL("/expired", req.url));
+    }
+
+    const click_count = link.click_count ?? 0;
+    const inactive = link.is_active === false || link.is_active == null;
+    const expired = isExpired(link.expires_at);
+    const maxed = reachedMaxClicks(link.max_clicks, click_count);
+
+    console.log("VALIDATION", {
+      exists: true,
+      is_active: link.is_active,
+      expires_at: link.expires_at,
+      max_clicks: link.max_clicks ?? null,
+      click_count,
+      now: new Date().toISOString(),
+      inactive,
+      expired,
+      maxed,
+    });
+
+    if (inactive || expired || maxed) {
+      console.warn("FAIL: inactive/expired/maxed");
+      return NextResponse.redirect(new URL("/expired", req.url));
+    }
+
+    // Increment click count (don't block redirect if update fails)
+    const upd = await supabase.from("links").update({ click_count: click_count + 1 }).eq("token", token);
+    if (upd.error) console.error("Supabase update error:", upd.error);
+
+    return NextResponse.redirect(link.target_url);
+  } catch (err) {
+    console.error("REDIRECT ROUTE CRASH:", err);
+    return NextResponse.redirect(new URL("/expired", req.url));
+  }
 }
