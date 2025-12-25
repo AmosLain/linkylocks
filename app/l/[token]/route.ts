@@ -1,104 +1,79 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import type { Database } from "@/types/database";
 
 export const runtime = "nodejs";
 
-// ---- Supabase admin client (service role) ----
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+// Service-role Supabase client for server-side redirect logic
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
 
-if (!url || !serviceKey) {
-  throw new Error(
-    "Supabase URL or SUPABASE_SERVICE_ROLE_KEY is missing in environment variables."
-  );
-}
+// Next.js 16 sometimes gives params as a Promise, so we support both.
+type Params =
+  | { token: string }
+  | Promise<{ token: string }>;
 
-const supabase = createClient<Database>(url, serviceKey);
-
-// ---- GET /l/[token] ----
 export async function GET(
-  _request: NextRequest,
-  context: { params: Promise<{ token: string }> } // Next.js 16: params is a Promise
+  request: NextRequest,
+  context: { params: Params }
 ) {
-  try {
-    const { token } = await context.params; // ✅ unwrap params
+  // Normalize params (await if needed)
+  const params =
+    "then" in context.params
+      ? await context.params
+      : context.params;
 
-    // 1) Fetch the matching link (first row only)
-    const { data: link, error } = await supabase
-      .from("links")
-      .select("*")
-      .eq("token", token)
-      .limit(1)
-      .maybeSingle();
+  const token = params.token;
 
-    if (error) {
-      console.error("Link lookup error:", error);
-      return NextResponse.json(
-        { error: "Link lookup failed" },
-        { status: 500 }
-      );
-    }
+  // 1️⃣ Fetch link by token
+  const { data: link, error } = await supabase
+    .from("links")
+    .select(
+      "id, target_url, expires_at, max_clicks, click_count, is_active"
+    )
+    .eq("token", token)
+    .single();
 
-    if (!link) {
-      return NextResponse.json(
-        { error: "Link not found" },
-        { status: 404 }
-      );
-    }
-
-    const now = new Date();
-
-    // 2) Disabled?
-    if (!link.is_active) {
-      return NextResponse.json(
-        { error: "Link disabled" },
-        { status: 410 }
-      );
-    }
-
-    // 3) Time-based expiry
-    if (link.expires_at) {
-      const expiry = new Date(link.expires_at);
-      if (now >= expiry) {
-        return NextResponse.json(
-          { error: "Link expired (time)" },
-          { status: 410 }
-        );
-      }
-    }
-
-    // 4) Max-opens expiry
-    if (link.max_opens && link.opens_count >= link.max_opens) {
-      return NextResponse.json(
-        { error: "Link expired (max opens reached)" },
-        { status: 410 }
-      );
-    }
-
-    // 5) Increment opens_count (best effort, don't block redirect)
-    const newCount = (link.opens_count ?? 0) + 1;
-    supabase
-      .from("links")
-      .update({ opens_count: newCount })
-      .eq("id", link.id)
-      .then(({ error: incError }) => {
-        if (incError) {
-          console.error("Error incrementing opens_count:", incError);
-        }
-      })
-      .catch((e) => console.error("Unexpected increment error:", e));
-
-    // 6) Redirect to the target URL
-    return NextResponse.redirect(link.target_url, { status: 302 });
-  } catch (err: any) {
-    console.error("Redirect handler error:", err);
-    return NextResponse.json(
-      {
-        error: "Internal Server Error",
-        details: String(err?.message || err),
-      },
-      { status: 500 }
-    );
+  if (error || !link) {
+    // Unknown token → treat as expired/unavailable
+    return NextResponse.redirect(new URL("/expired", request.url));
   }
+
+  const now = new Date();
+
+  const isTimeExpired =
+    link.expires_at && new Date(link.expires_at) < now;
+
+  const isMaxed =
+    link.max_clicks !== null &&
+    link.click_count !== null &&
+    link.click_count >= link.max_clicks;
+
+  // 2️⃣ If expired / maxed / inactive → redirect to expired page
+  if (!link.is_active || isTimeExpired || isMaxed) {
+    try {
+      await supabase
+        .from("links")
+        .update({ is_active: false })
+        .eq("id", link.id);
+    } catch {
+      // ignore update errors
+    }
+
+    return NextResponse.redirect(new URL("/expired", request.url));
+  }
+
+  // 3️⃣ Increment click counter (best effort)
+  try {
+    await supabase
+      .from("links")
+      .update({ click_count: (link.click_count ?? 0) + 1 })
+      .eq("id", link.id);
+  } catch {
+    // ignore analytics errors
+  }
+
+  // 4️⃣ Redirect to the actual destination
+  return NextResponse.redirect(link.target_url);
 }

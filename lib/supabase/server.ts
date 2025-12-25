@@ -1,15 +1,19 @@
-import { createServerClient } from "@supabase/ssr";
+// lib/supabase/server.ts
 import { cookies } from "next/headers";
-import type { Database } from "@/types/database";
+import { createServerClient } from "@supabase/ssr";
 
 /**
  * Server-side Supabase client tied to the user's cookies/session.
- * Use this in server components, layouts, etc.
+ * Uses the public anon key and works with RLS (auth.uid()).
+ *
+ * Note: In Next.js 16, `cookies()` is async-typed, so we `await` it here.
+ * This function itself is async, so whenever you use it, do:
+ *   const supabase = await createSupabaseServerClient();
  */
-export async function createClient() {
+export async function createSupabaseServerClient() {
   const cookieStore = await cookies();
 
-  return createServerClient<Database>(
+  return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
@@ -17,36 +21,15 @@ export async function createClient() {
         get(name: string) {
           return cookieStore.get(name)?.value;
         },
-        set(name: string, value: string, options: any) {
-          try {
-            cookieStore.set({ name, value, ...options });
-          } catch {
-            // ignore in edge cases where cookies can't be set
-          }
+        // For now we don't need to set/remove cookies on the server.
+        // If you later use server-side signIn/signOut, we can wire these up.
+        set() {
+          // no-op
         },
-        remove(name: string, options: any) {
-          try {
-            cookieStore.set({ name, value: "", ...options });
-          } catch {
-            // ignore in edge cases where cookies can't be removed
-          }
+        remove() {
+          // no-op
         },
       },
-    }
-  );
-}
-
-/**
- * Service-role Supabase client.
- * Bypasses RLS – ONLY for backend logic like redirects or cron jobs.
- * Never expose this in client-side code.
- */
-export function createServiceClient() {
-  return createServerClient<Database>(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    {
-      cookies: {},
     }
   );
 }
