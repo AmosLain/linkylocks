@@ -5,11 +5,10 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 
 function toIsoOrNull(datetimeLocal: string): string | null {
-  // datetime-local gives "YYYY-MM-DDTHH:MM"
   if (!datetimeLocal) return null;
   const d = new Date(datetimeLocal);
   if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString(); // store as timestamptz
+  return d.toISOString();
 }
 
 function parseMaxClicksOrNull(v: string): number | null {
@@ -40,18 +39,15 @@ export default function NewLinkPage() {
 
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [created, setCreated] = useState<string | null>(null);
 
   async function onCreate() {
     setErr(null);
-    setCreated(null);
 
     const url = targetUrl.trim();
     if (!url) return setErr("Please enter a target URL.");
     if (!/^https?:\/\//i.test(url)) return setErr("URL must start with http:// or https://");
 
     const maxClicksNum = parseMaxClicksOrNull(maxClicks);
-    // If user typed something but it didn't parse => show error
     if (maxClicks.trim() !== "" && maxClicksNum === null) {
       return setErr("Max clicks must be a whole number (1 or more).");
     }
@@ -62,15 +58,14 @@ export default function NewLinkPage() {
     try {
       const { data: userRes, error: userErr } = await supabase.auth.getUser();
       if (userErr) throw userErr;
+
       const userId = userRes.user?.id;
       if (!userId) throw new Error("Not logged in.");
 
-      // try a few times in case token collision happens
-      let token = genToken(10);
       let lastError: any = null;
 
       for (let attempt = 0; attempt < 3; attempt++) {
-        token = genToken(10);
+        const token = genToken(10);
 
         const { error: insErr } = await supabase.from("links").insert({
           user_id: userId,
@@ -79,17 +74,15 @@ export default function NewLinkPage() {
           target_url: url,
           is_active: true,
           click_count: 0,
-          max_clicks: maxClicksNum,      // ✅ THIS IS THE IMPORTANT ONE
-          expires_at: expiresIso,        // ✅ THIS IS THE IMPORTANT ONE
+          max_clicks: maxClicksNum,
+          expires_at: expiresIso,
         });
 
         if (!insErr) {
-          setCreated(`${window.location.origin}/l/${token}`);
           router.push("/app/links");
           router.refresh();
           return;
         }
-
         lastError = insErr;
       }
 
@@ -121,7 +114,7 @@ export default function NewLinkPage() {
               value={label}
               onChange={(e) => setLabel(e.target.value)}
               placeholder="e.g. YouTube video, Landing page, etc."
-              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black/20"
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400"
             />
           </div>
 
@@ -131,7 +124,7 @@ export default function NewLinkPage() {
               value={targetUrl}
               onChange={(e) => setTargetUrl(e.target.value)}
               placeholder="https://example.com"
-              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black/20"
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400"
             />
           </div>
 
@@ -143,18 +136,18 @@ export default function NewLinkPage() {
                 onChange={(e) => setMaxClicks(e.target.value)}
                 placeholder="e.g. 2"
                 inputMode="numeric"
-                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black/20"
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400"
               />
               <p className="mt-1 text-xs text-gray-500">Leave empty = unlimited</p>
             </div>
 
             <div>
-              <label className="mb-1 block text-sm font-semibold text-gray-800">Expiry date (optional)</label>
+              <label className="mb-1 block text-sm font-semibold text-gray-800">Expiry (optional)</label>
               <input
                 type="datetime-local"
                 value={expiresAtLocal}
                 onChange={(e) => setExpiresAtLocal(e.target.value)}
-                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 focus:outline-none focus:ring-2 focus:ring-black/20"
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900"
               />
               <p className="mt-1 text-xs text-gray-500">Leave empty = never expires</p>
             </div>
@@ -163,12 +156,6 @@ export default function NewLinkPage() {
           {err && (
             <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
               {err}
-            </div>
-          )}
-
-          {created && (
-            <div className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-900">
-              Created: <span className="break-all font-semibold">{created}</span>
             </div>
           )}
 

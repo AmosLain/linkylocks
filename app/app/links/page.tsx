@@ -29,11 +29,6 @@ function statusOf(l: LinkRow) {
   return { text: "Active", cls: "bg-green-50 text-green-900" };
 }
 
-function truncate(s: string, n = 38) {
-  if (!s) return s;
-  return s.length > n ? s.slice(0, n - 1) + "…" : s;
-}
-
 export default function LinksPage() {
   const supabase = useMemo(() => createClient(), []);
   const [rows, setRows] = useState<LinkRow[]>([]);
@@ -50,7 +45,6 @@ export default function LinksPage() {
       const userId = userRes.user?.id;
       if (!userId) throw new Error("Not logged in");
 
-      // IMPORTANT: click_count MUST be selected
       const { data, error } = await supabase
         .from("links")
         .select("id,token,target_url,label,is_active,expires_at,max_clicks,click_count,created_at")
@@ -58,7 +52,6 @@ export default function LinksPage() {
         .order("created_at", { ascending: false });
 
       if (error) throw error;
-
       setRows((data as LinkRow[]) ?? []);
     } catch (e: any) {
       setErr(e?.message ?? "Failed to load links");
@@ -69,9 +62,7 @@ export default function LinksPage() {
 
   useEffect(() => {
     load();
-
-    // Poll every 5s so counts always update after redirects
-    const t = setInterval(load, 5000);
+    const t = setInterval(load, 4000);
     return () => clearInterval(t);
   }, []);
 
@@ -128,7 +119,7 @@ export default function LinksPage() {
               <div key={l.id} className="grid grid-cols-12 gap-2 border-b border-gray-100 px-6 py-4">
                 <div className="col-span-5">
                   <div className="font-semibold text-gray-900">{l.label?.trim() || "Untitled"}</div>
-                  <div className="text-sm text-gray-500">{truncate(l.target_url, 48)}</div>
+                  <div className="text-sm text-gray-500 break-all">{l.target_url}</div>
                 </div>
 
                 <div className="col-span-3 flex items-center">
@@ -161,7 +152,7 @@ export default function LinksPage() {
                     ⧉
                   </button>
 
-                  {/* IMPORTANT: use <a> so Next does NOT prefetch/hit the link in background */}
+                  {/* <a> avoids Next prefetch */}
                   <a
                     href={shortPath}
                     target="_blank"
@@ -177,10 +168,6 @@ export default function LinksPage() {
           })
         )}
       </div>
-
-      <p className="mt-3 text-xs text-gray-500">
-        Counts refresh every 5 seconds. Click a short link in a new tab, then come back and wait a moment (or hit Refresh).
-      </p>
     </main>
   );
 }
