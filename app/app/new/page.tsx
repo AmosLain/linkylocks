@@ -4,28 +4,33 @@ import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 
-function toIsoOrNull(datetimeLocal: string): string | null {
-  if (!datetimeLocal) return null;
-  const d = new Date(datetimeLocal);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString();
-}
-
-function parseMaxClicksOrNull(v: string): number | null {
-  const raw = v.trim();
-  if (!raw) return null;
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return null;
-  const intN = Math.floor(n);
-  if (intN < 1) return null;
-  return intN;
-}
-
 function genToken(len = 10) {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
   let out = "";
   for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
   return out;
+}
+
+function normalizeUrl(input: string) {
+  const s = input.trim();
+  return s;
+}
+
+function toIsoOrNull(datetimeLocal: string): string | null {
+  // datetime-local is: "YYYY-MM-DDTHH:MM"
+  if (!datetimeLocal || !datetimeLocal.trim()) return null;
+  const d = new Date(datetimeLocal);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+function toIntOrNull(raw: string): number | null {
+  if (!raw || !raw.trim()) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  const i = Math.floor(n);
+  if (i < 1) return null;
+  return i;
 }
 
 export default function NewLinkPage() {
@@ -34,6 +39,8 @@ export default function NewLinkPage() {
 
   const [label, setLabel] = useState("");
   const [targetUrl, setTargetUrl] = useState("");
+
+  // Keep as STRING in state so empty stays empty (not 0)
   const [maxClicks, setMaxClicks] = useState("");
   const [expiresAtLocal, setExpiresAtLocal] = useState("");
 
@@ -43,16 +50,21 @@ export default function NewLinkPage() {
   async function onCreate() {
     setErr(null);
 
-    const url = targetUrl.trim();
+    const url = normalizeUrl(targetUrl);
     if (!url) return setErr("Please enter a target URL.");
     if (!/^https?:\/\//i.test(url)) return setErr("URL must start with http:// or https://");
 
-    const maxClicksNum = parseMaxClicksOrNull(maxClicks);
+    // FORCE: if user typed something invalid, block the submit (no silent NULL)
+    const maxClicksNum = toIntOrNull(maxClicks);
     if (maxClicks.trim() !== "" && maxClicksNum === null) {
       return setErr("Max clicks must be a whole number (1 or more).");
     }
 
     const expiresIso = toIsoOrNull(expiresAtLocal);
+    // FORCE: if user typed a value but it couldn't parse, block submit
+    if (expiresAtLocal.trim() !== "" && !expiresIso) {
+      return setErr("Expiry date is invalid. Please choose it again.");
+    }
 
     setLoading(true);
     try {
@@ -62,31 +74,37 @@ export default function NewLinkPage() {
       const userId = userRes.user?.id;
       if (!userId) throw new Error("Not logged in.");
 
-      let lastError: any = null;
-
+      // Try a few times in case of token collision
+      let lastErr: any = null;
       for (let attempt = 0; attempt < 3; attempt++) {
         const token = genToken(10);
 
-        const { error: insErr } = await supabase.from("links").insert({
+        // IMPORTANT: we ALWAYS send max_clicks + expires_at keys (never undefined)
+        const payload = {
           user_id: userId,
           label: label.trim() || null,
           token,
           target_url: url,
           is_active: true,
           click_count: 0,
-          max_clicks: maxClicksNum,
-          expires_at: expiresIso,
-        });
+          max_clicks: maxClicksNum, // integer or null
+          expires_at: expiresIso,   // iso or null
+        };
 
+        // Debug (optional): you can remove later
+        console.log("CREATE LINK payload:", payload);
+
+        const { error: insErr } = await supabase.from("links").insert(payload);
         if (!insErr) {
           router.push("/app/links");
           router.refresh();
           return;
         }
-        lastError = insErr;
+
+        lastErr = insErr;
       }
 
-      throw lastError ?? new Error("Failed to create link.");
+      throw lastErr ?? new Error("Failed to create link.");
     } catch (e: any) {
       setErr(e?.message ?? "Failed to create link.");
     } finally {
@@ -113,8 +131,8 @@ export default function NewLinkPage() {
             <input
               value={label}
               onChange={(e) => setLabel(e.target.value)}
-              placeholder="e.g. YouTube video, Landing page, etc."
-              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400"
+              placeholder="e.g. YouTube video, Landing page..."
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black/20"
             />
           </div>
 
@@ -124,7 +142,7 @@ export default function NewLinkPage() {
               value={targetUrl}
               onChange={(e) => setTargetUrl(e.target.value)}
               placeholder="https://example.com"
-              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400"
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black/20"
             />
           </div>
 
@@ -132,11 +150,13 @@ export default function NewLinkPage() {
             <div>
               <label className="mb-1 block text-sm font-semibold text-gray-800">Max clicks (optional)</label>
               <input
+                type="number"
+                min={1}
+                step={1}
                 value={maxClicks}
                 onChange={(e) => setMaxClicks(e.target.value)}
                 placeholder="e.g. 2"
-                inputMode="numeric"
-                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400"
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black/20"
               />
               <p className="mt-1 text-xs text-gray-500">Leave empty = unlimited</p>
             </div>
@@ -147,7 +167,7 @@ export default function NewLinkPage() {
                 type="datetime-local"
                 value={expiresAtLocal}
                 onChange={(e) => setExpiresAtLocal(e.target.value)}
-                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900"
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 focus:outline-none focus:ring-2 focus:ring-black/20"
               />
               <p className="mt-1 text-xs text-gray-500">Leave empty = never expires</p>
             </div>
