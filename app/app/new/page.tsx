@@ -19,8 +19,15 @@ function normalizeUrl(input: string) {
 function toIsoOrNull(datetimeLocal: string): string | null {
   // datetime-local is: "YYYY-MM-DDTHH:MM"
   if (!datetimeLocal || !datetimeLocal.trim()) return null;
+  
   const d = new Date(datetimeLocal);
   if (Number.isNaN(d.getTime())) return null;
+  
+  // Check if the date is in the past
+  if (d.getTime() < Date.now()) {
+    return null; // Return null for past dates
+  }
+  
   return d.toISOString();
 }
 
@@ -31,6 +38,18 @@ function toIntOrNull(raw: string): number | null {
   const i = Math.floor(n);
   if (i < 1) return null;
   return i;
+}
+
+// Get current datetime in local format for min attribute
+function getMinDateTime(): string {
+  const now = new Date();
+  // Format: YYYY-MM-DDTHH:MM
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
 }
 
 export default function NewLinkPage() {
@@ -63,7 +82,7 @@ export default function NewLinkPage() {
     const expiresIso = toIsoOrNull(expiresAtLocal);
     // FORCE: if user typed a value but it couldn't parse, block submit
     if (expiresAtLocal.trim() !== "" && !expiresIso) {
-      return setErr("Expiry date is invalid. Please choose it again.");
+      return setErr("Expiry date is invalid or in the past. Please choose a future date.");
     }
 
     setLoading(true);
@@ -91,21 +110,30 @@ export default function NewLinkPage() {
           expires_at: expiresIso,   // iso or null
         };
 
-        // Debug (optional): you can remove later
+        // Debug logging
         console.log("CREATE LINK payload:", payload);
+        console.log("Current time:", new Date().toISOString());
+        console.log("Expires at:", payload.expires_at);
+        if (payload.expires_at) {
+          const timeUntilExpiry = new Date(payload.expires_at).getTime() - Date.now();
+          console.log("Time until expiry (hours):", (timeUntilExpiry / (1000 * 60 * 60)).toFixed(2));
+        }
 
         const { error: insErr } = await supabase.from("links").insert(payload);
         if (!insErr) {
+          console.log("Link created successfully with token:", token);
           router.push("/app/links");
           router.refresh();
           return;
         }
 
+        console.error("Insert error:", insErr);
         lastErr = insErr;
       }
 
       throw lastErr ?? new Error("Failed to create link.");
     } catch (e: any) {
+      console.error("Create link error:", e);
       setErr(e?.message ?? "Failed to create link.");
     } finally {
       setLoading(false);
@@ -167,6 +195,7 @@ export default function NewLinkPage() {
                 type="datetime-local"
                 value={expiresAtLocal}
                 onChange={(e) => setExpiresAtLocal(e.target.value)}
+                min={getMinDateTime()}
                 className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 focus:outline-none focus:ring-2 focus:ring-black/20"
               />
               <p className="mt-1 text-xs text-gray-500">Leave empty = never expires</p>
