@@ -72,9 +72,8 @@ export default function LinksPage() {
   return (
     <main className="mx-auto max-w-6xl px-6 py-10">
       <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-3xl font-extrabold tracking-tight text-indigo-600">My Links</h1>
+        <h1 className="text-3xl font-extrabold tracking-tight text-indigo-600">My Links v2.0</h1>
 
-        {/* ✅ BUTTON RESTORED */}
         <div className="flex gap-2">
           <button
             onClick={load}
@@ -87,7 +86,7 @@ export default function LinksPage() {
             href="/app/new"
             className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700"
           >
-            ＋ Add New Link
+            + Add New Link
           </a>
         </div>
       </div>
@@ -115,7 +114,7 @@ export default function LinksPage() {
             {loading ? (
               <tr>
                 <td className="px-4 py-6 text-gray-600" colSpan={6}>
-                  Loading…
+                  Loading...
                 </td>
               </tr>
             ) : links.length === 0 ? (
@@ -156,7 +155,6 @@ export default function LinksPage() {
                     </td>
 
                     <td className="px-4 py-3 text-right">
-                      {/* ✅ CRITICAL: plain <a> so Next can't prefetch / burn clicks */}
                       <a
                         href={`/l/${l.token}`}
                         target="_blank"
