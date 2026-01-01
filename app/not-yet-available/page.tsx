@@ -1,23 +1,13 @@
-"use client";
+// app/not-yet-available/page.tsx
+import { Suspense } from "react";
+import NotYetAvailableClient from "./not-yet-available-client";
 
-import { useSearchParams } from "next/navigation";
+export const dynamic = "force-dynamic";
 
 export default function NotYetAvailablePage() {
-  const sp = useSearchParams();
-  const until = sp.get("until");
-
   return (
-    <main className="mx-auto max-w-xl p-8">
-      <h1 className="text-2xl font-bold">Not yet available</h1>
-      <p className="mt-3 text-gray-600">
-        This link is delayed. Please try again later.
-      </p>
-
-      {until && (
-        <p className="mt-2 text-sm text-gray-500">
-          Available at: <span className="font-mono">{until}</span>
-        </p>
-      )}
-    </main>
+    <Suspense fallback={<div className="p-6">Loading…</div>}>
+      <NotYetAvailableClient />
+    </Suspense>
   );
 }
