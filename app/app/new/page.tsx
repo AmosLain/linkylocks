@@ -12,22 +12,14 @@ function genToken(len = 10) {
 }
 
 function normalizeUrl(input: string) {
-  const s = input.trim();
-  return s;
+  return input.trim();
 }
 
 function toIsoOrNull(datetimeLocal: string): string | null {
-  // datetime-local is: "YYYY-MM-DDTHH:MM"
   if (!datetimeLocal || !datetimeLocal.trim()) return null;
-  
   const d = new Date(datetimeLocal);
   if (Number.isNaN(d.getTime())) return null;
-  
-  // Check if the date is in the past
-  if (d.getTime() < Date.now()) {
-    return null; // Return null for past dates
-  }
-  
+  if (d.getTime() < Date.now()) return null;
   return d.toISOString();
 }
 
@@ -40,16 +32,23 @@ function toIntOrNull(raw: string): number | null {
   return i;
 }
 
-// Get current datetime in local format for min attribute
 function getMinDateTime(): string {
   const now = new Date();
-  // Format: YYYY-MM-DDTHH:MM
   const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  const hours = String(now.getHours()).padStart(2, '0');
-  const minutes = String(now.getMinutes()).padStart(2, '0');
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  const hours = String(now.getHours()).padStart(2, "0");
+  const minutes = String(now.getMinutes()).padStart(2, "0");
   return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+// Browser SHA-256 (no external libs)
+async function sha256Browser(text: string) {
+  const enc = new TextEncoder().encode(text);
+  const buf = await crypto.subtle.digest("SHA-256", enc);
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 export default function NewLinkPage() {
@@ -58,10 +57,14 @@ export default function NewLinkPage() {
 
   const [label, setLabel] = useState("");
   const [targetUrl, setTargetUrl] = useState("");
-
-  // Keep as STRING in state so empty stays empty (not 0)
   const [maxClicks, setMaxClicks] = useState("");
   const [expiresAtLocal, setExpiresAtLocal] = useState("");
+
+  // NEW FEATURES
+  const [isPhantom, setIsPhantom] = useState(false);
+  const [password, setPassword] = useState("");
+  const [delaySeconds, setDelaySeconds] = useState("");
+  const [revealAtLocal, setRevealAtLocal] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -73,17 +76,33 @@ export default function NewLinkPage() {
     if (!url) return setErr("Please enter a target URL.");
     if (!/^https?:\/\//i.test(url)) return setErr("URL must start with http:// or https://");
 
-    // FORCE: if user typed something invalid, block the submit (no silent NULL)
     const maxClicksNum = toIntOrNull(maxClicks);
     if (maxClicks.trim() !== "" && maxClicksNum === null) {
       return setErr("Max clicks must be a whole number (1 or more).");
     }
 
     const expiresIso = toIsoOrNull(expiresAtLocal);
-    // FORCE: if user typed a value but it couldn't parse, block submit
     if (expiresAtLocal.trim() !== "" && !expiresIso) {
       return setErr("Expiry date is invalid or in the past. Please choose a future date.");
     }
+
+    const revealAtIso = toIsoOrNull(revealAtLocal);
+    if (revealAtLocal.trim() !== "" && !revealAtIso) {
+      return setErr("Reveal date is invalid or in the past. Please choose a future date.");
+    }
+
+    const delaySecondsNum = toIntOrNull(delaySeconds);
+    if (delaySeconds.trim() !== "" && delaySecondsNum === null) {
+      return setErr("Delay must be a whole number (1 or more).");
+    }
+
+    // ✅ enforce "choose one" (delay OR reveal_at)
+    if (delaySecondsNum && revealAtIso) {
+      return setErr("Choose only one: Delay by seconds OR Reveal at a specific time.");
+    }
+
+    // Phantom links: force max_clicks = 1
+    const finalMaxClicks = isPhantom ? 1 : maxClicksNum;
 
     setLoading(true);
     try {
@@ -93,12 +112,15 @@ export default function NewLinkPage() {
       const userId = userRes.user?.id;
       if (!userId) throw new Error("Not logged in.");
 
-      // Try a few times in case of token collision
+      // Store password HASH in `password` column (not plain text)
+      const passwordHash =
+        password.trim().length > 0 ? await sha256Browser(password.trim()) : null;
+
       let lastErr: any = null;
+
       for (let attempt = 0; attempt < 3; attempt++) {
         const token = genToken(10);
 
-        // IMPORTANT: we ALWAYS send max_clicks + expires_at keys (never undefined)
         const payload = {
           user_id: userId,
           label: label.trim() || null,
@@ -106,34 +128,27 @@ export default function NewLinkPage() {
           target_url: url,
           is_active: true,
           click_count: 0,
-          max_clicks: maxClicksNum, // integer or null
-          expires_at: expiresIso,   // iso or null
-        };
+          max_clicks: finalMaxClicks,
+          expires_at: expiresIso,
 
-        // Debug logging
-        console.log("CREATE LINK payload:", payload);
-        console.log("Current time:", new Date().toISOString());
-        console.log("Expires at:", payload.expires_at);
-        if (payload.expires_at) {
-          const timeUntilExpiry = new Date(payload.expires_at).getTime() - Date.now();
-          console.log("Time until expiry (hours):", (timeUntilExpiry / (1000 * 60 * 60)).toFixed(2));
-        }
+          // feature fields (these columns already exist in your project)
+          is_phantom: isPhantom,
+          password: passwordHash,
+          delay_seconds: delaySecondsNum,
+          reveal_at: revealAtIso,
+        };
 
         const { error: insErr } = await supabase.from("links").insert(payload);
         if (!insErr) {
-          console.log("Link created successfully with token:", token);
-          router.push("/app/links");
+          router.push("/app/links"); // after create, go to list
           router.refresh();
           return;
         }
-
-        console.error("Insert error:", insErr);
         lastErr = insErr;
       }
 
       throw lastErr ?? new Error("Failed to create link.");
     } catch (e: any) {
-      console.error("Create link error:", e);
       setErr(e?.message ?? "Failed to create link.");
     } finally {
       setLoading(false);
@@ -144,10 +159,7 @@ export default function NewLinkPage() {
     <main className="mx-auto max-w-2xl px-6 py-10">
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-3xl font-extrabold tracking-tight text-indigo-600">New Link</h1>
-        <a
-          href="/app/links"
-          className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm text-gray-900"
-        >
+        <a href="/app/links" className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm text-gray-900">
           ← Back
         </a>
       </div>
@@ -160,7 +172,7 @@ export default function NewLinkPage() {
               value={label}
               onChange={(e) => setLabel(e.target.value)}
               placeholder="e.g. YouTube video, Landing page..."
-              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black/20"
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400"
             />
           </div>
 
@@ -170,7 +182,7 @@ export default function NewLinkPage() {
               value={targetUrl}
               onChange={(e) => setTargetUrl(e.target.value)}
               placeholder="https://example.com"
-              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black/20"
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400"
             />
           </div>
 
@@ -184,7 +196,8 @@ export default function NewLinkPage() {
                 value={maxClicks}
                 onChange={(e) => setMaxClicks(e.target.value)}
                 placeholder="e.g. 2"
-                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black/20"
+                disabled={isPhantom}
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 disabled:bg-gray-100"
               />
               <p className="mt-1 text-xs text-gray-500">Leave empty = unlimited</p>
             </div>
@@ -196,9 +209,70 @@ export default function NewLinkPage() {
                 value={expiresAtLocal}
                 onChange={(e) => setExpiresAtLocal(e.target.value)}
                 min={getMinDateTime()}
-                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 focus:outline-none focus:ring-2 focus:ring-black/20"
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900"
               />
               <p className="mt-1 text-xs text-gray-500">Leave empty = never expires</p>
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-purple-200 bg-purple-50 p-4">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={isPhantom}
+                onChange={(e) => setIsPhantom(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300"
+              />
+              <div>
+                <span className="font-semibold text-purple-900">🔥 Phantom Link (Self-Destruct)</span>
+                <p className="text-xs text-purple-700">Link automatically deletes after first use</p>
+              </div>
+            </label>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-sm font-semibold text-gray-800">🔒 Password Protection (optional)</label>
+            <input
+              type="text"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Enter password to protect this link"
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-gray-900 placeholder:text-gray-400"
+            />
+            <p className="mt-1 text-xs text-gray-500">Visitors must enter this password to access the link</p>
+          </div>
+
+          <div className="rounded-lg border border-blue-200 bg-blue-50 p-4">
+            <h3 className="mb-3 font-semibold text-blue-900">⏱️ Delayed Reveal (choose one)</h3>
+
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1 block text-sm font-semibold text-blue-800">Delay by seconds</label>
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={delaySeconds}
+                  onChange={(e) => setDelaySeconds(e.target.value)}
+                  placeholder="e.g. 30"
+                  className="w-full rounded-lg border border-blue-300 bg-white px-3 py-2 text-gray-900"
+                />
+                <p className="mt-1 text-xs text-blue-700">Link shows "unavailable" message for this many seconds</p>
+              </div>
+
+              <div className="text-center text-xs text-blue-700 font-semibold">OR</div>
+
+              <div>
+                <label className="mb-1 block text-sm font-semibold text-blue-800">Reveal at specific time</label>
+                <input
+                  type="datetime-local"
+                  value={revealAtLocal}
+                  onChange={(e) => setRevealAtLocal(e.target.value)}
+                  min={getMinDateTime()}
+                  className="w-full rounded-lg border border-blue-300 bg-white px-3 py-2 text-gray-900"
+                />
+                <p className="mt-1 text-xs text-blue-700">Link becomes available at this exact time</p>
+              </div>
             </div>
           </div>
 
