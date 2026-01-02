@@ -11,37 +11,66 @@ export default function PasswordRequiredPage({ searchParams }: Props) {
   const bad = searchParams?.bad === "1";
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-6">
-      <div className="max-w-md w-full rounded-2xl border p-6 shadow-sm">
-        <h1 className="text-xl font-semibold">Password required</h1>
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <div style={{ width: "100%", maxWidth: 420, border: "1px solid #ddd", borderRadius: 16, padding: 20 }}>
+        <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>Password required</h1>
 
         {bad && (
-          <p className="mt-2 text-sm text-red-600">
+          <div style={{ marginBottom: 10, color: "#b91c1c", fontSize: 14 }}>
             Wrong password. Try again.
-          </p>
+          </div>
         )}
 
         {!token ? (
-          <p className="mt-2 text-sm opacity-80">Missing token. Open the link again.</p>
+          <div style={{ fontSize: 14, opacity: 0.8 }}>
+            Missing token. Please open the link again.
+          </div>
         ) : (
-          <form className="mt-4 space-y-3" action="/password-required/unlock" method="POST">
+          <form action="/password-required/unlock" method="POST" style={{ marginTop: 14 }}>
             <input type="hidden" name="token" value={token} />
+
+            <label style={{ display: "block", fontSize: 13, marginBottom: 6, opacity: 0.85 }}>
+              Enter password
+            </label>
+
             <input
-              className="w-full rounded-xl border px-3 py-2"
-              type="password"
               name="password"
-              placeholder="Enter password"
+              type="password"
               required
+              autoFocus
+              autoComplete="current-password"
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                borderRadius: 12,
+                border: "1px solid #ccc",
+                fontSize: 16,
+                outline: "none",
+              }}
             />
-            <button className="w-full rounded-xl border px-3 py-2 font-medium" type="submit">
+
+            <button
+              type="submit"
+              style={{
+                marginTop: 12,
+                width: "100%",
+                padding: "10px 12px",
+                borderRadius: 12,
+                border: "1px solid #111",
+                fontSize: 16,
+                fontWeight: 600,
+                cursor: "pointer",
+                background: "white",
+              }}
+            >
               Unlock
             </button>
+
+            <div style={{ marginTop: 10, fontSize: 12, opacity: 0.7 }}>
+              Token: {token}
+            </div>
           </form>
         )}
-
-        <p className="mt-4 text-xs opacity-70">
-          This unlock uses an HttpOnly cookie (no password in the URL).
-        </p>
       </div>
     </div>
   );
