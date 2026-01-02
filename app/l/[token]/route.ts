@@ -1,139 +1,125 @@
-import { NextResponse } from "next/server";
+// app/l/[token]/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { cookies } from "next/headers";
 import { createClient } from "@supabase/supabase-js";
-import crypto from "crypto";
 
 export const runtime = "nodejs";
 
-function isPrefetch(req: Request) {
-  const h = req.headers;
-  const purpose = (h.get("purpose") || "").toLowerCase();
-  const secPurpose = (h.get("sec-purpose") || "").toLowerCase();
-  const nextRouterPrefetch = h.get("next-router-prefetch");
-  const middlewarePrefetch = h.get("x-middleware-prefetch");
-  const fetchMode = (h.get("sec-fetch-mode") || "").toLowerCase();
-
-  return (
-    purpose === "prefetch" ||
-    secPurpose === "prefetch" ||
-    !!nextRouterPrefetch ||
-    !!middlewarePrefetch ||
-    fetchMode === "no-cors"
-  );
-}
-
-function sha256(text: string) {
-  return crypto.createHash("sha256").update(text).digest("hex");
-}
-
-function expired(req: Request) {
-  return NextResponse.redirect(new URL("/expired", req.url), 307);
-}
-
-export async function GET(
-  req: Request,
-  ctx: { params: Promise<{ token: string }> }
-) {
-  try {
-    const { token } = await ctx.params;
-
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-    if (!url || !serviceKey || !token) return expired(req);
-
-    const supabase = createClient(url, serviceKey, {
-      auth: { persistSession: false },
-    });
-
-    // 1) Read link row (needed for password/delay/reveal checks)
-    const { data: link, error: readErr } = await supabase
-      .from("links")
-      .select(
-        "token,target_url,is_active,expires_at,max_clicks,click_count,created_at,password,delay_seconds,reveal_at"
-      )
-      .eq("token", token)
-      .maybeSingle<{
-        token: string;
-        target_url: string;
-        is_active: boolean;
-        expires_at: string | null;
-        max_clicks: number | null;
-        click_count: number | null;
-        created_at: string | null;
-        password: string | null; // we will store HASH here (see create page)
-        delay_seconds: number | null;
-        reveal_at: string | null;
-      }>();
-
-    if (readErr || !link) return expired(req);
-    if (link.is_active !== true) return expired(req);
-
-    const now = Date.now();
-
-    // 2) Reveal at specific time (absolute)
-    if (link.reveal_at) {
-      const revealAt = new Date(link.reveal_at).getTime();
-      if (!Number.isNaN(revealAt) && now < revealAt) {
-        const u = new URL("/not-yet-available", req.url);
-        u.searchParams.set("until", new Date(revealAt).toISOString());
-        return NextResponse.redirect(u, 307);
-      }
-    }
-
-    // 3) Delay by seconds (relative to created_at)
-    if (link.delay_seconds != null && link.delay_seconds > 0 && link.created_at) {
-      const created = new Date(link.created_at).getTime();
-      const availableAt = created + link.delay_seconds * 1000;
-      if (now < availableAt) {
-        const u = new URL("/not-yet-available", req.url);
-        u.searchParams.set("until", new Date(availableAt).toISOString());
-        return NextResponse.redirect(u, 307);
-      }
-    }
-
-    // 4) Password protection
-    // We store HASH in `password` column (not plain text).
-    if (link.password) {
-      const reqUrl = new URL(req.url);
-      const pw = reqUrl.searchParams.get("pw") || "";
-
-      if (!pw) {
-        const u = new URL("/password-required", req.url);
-        u.searchParams.set("token", token);
-        return NextResponse.redirect(u, 307);
-      }
-
-      if (sha256(pw) !== link.password) {
-        const u = new URL("/password-required", req.url);
-        u.searchParams.set("token", token);
-        u.searchParams.set("bad", "1");
-        return NextResponse.redirect(u, 307);
-      }
-    }
-
-    // 5) Prefetch: don't count clicks (but you CAN redirect)
-    if (isPrefetch(req)) {
-      // still respect expiry/max_clicks checks for prefetch
-      if (link.expires_at) {
-        const exp = new Date(link.expires_at).getTime();
-        if (Number.isFinite(exp) && now >= exp) return expired(req);
-      }
-      if (link.max_clicks != null && (link.click_count ?? 0) >= link.max_clicks) {
-        return expired(req);
-      }
-      return NextResponse.redirect(link.target_url, 302);
-    }
-
-    // 6) Real click: atomic enforcement + increment
-    const { data, error } = await supabase.rpc("resolve_link", { p_token: token });
-
-    if (error || !data || data.length === 0) return expired(req);
-
-    const row = data[0] as { ok: boolean; target_url: string | null };
-    if (!row.ok || !row.target_url) return expired(req);
-
-    return NextResponse.redirect(row.target_url, 307);
-  } catch {
-    return expired(req);
+// --- Supabase admin client (service role) ---
+function supabaseAdmin() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+  if (!url || !key) {
+    throw new Error("Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
   }
+  return createClient(url, key, {
+    auth: { persistSession: false },
+  });
+}
+
+// --- Helpers ---
+function isPrefetchLike(req: NextRequest) {
+  const purpose = req.headers.get("purpose") || "";
+  const secPurpose = req.headers.get("sec-purpose") || "";
+  const xMiddlewarePrefetch = req.headers.get("x-middleware-prefetch") || "";
+  const nextRouterPrefetch = req.headers.get("next-router-prefetch") || "";
+  const userAgent = (req.headers.get("user-agent") || "").toLowerCase();
+
+  if (purpose.toLowerCase().includes("prefetch")) return true;
+  if (secPurpose.toLowerCase().includes("prefetch")) return true;
+  if (xMiddlewarePrefetch === "1") return true;
+  if (nextRouterPrefetch === "1") return true;
+
+  // Bots/crawlers shouldn't burn clicks
+  if (userAgent.includes("vercelbot")) return true;
+  if (userAgent.includes("node")) return true;
+
+  return false;
+}
+
+function redirectTo(req: NextRequest, path: string, params?: Record<string, string>) {
+  const url = new URL(path, req.url);
+  if (params) {
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  }
+  return NextResponse.redirect(url);
+}
+
+function safeDateMs(value: unknown): number | null {
+  if (!value) return null;
+  const t = Date.parse(String(value));
+  return Number.isFinite(t) ? t : null;
+}
+
+export async function GET(req: NextRequest, ctx: { params: { token: string } }) {
+  const token = ctx.params.token;
+
+  if (!token || token.length < 3) {
+    return redirectTo(req, "/");
+  }
+
+  const sb = supabaseAdmin();
+
+  // IMPORTANT: your DB stores the password hash in `password` (NOT password_hash)
+  const { data: link, error } = await sb
+    .from("links")
+    .select("token, created_at, delay_seconds, reveal_at, password")
+    .eq("token", token)
+    .single();
+
+  if (error || !link) {
+    return redirectTo(req, "/");
+  }
+
+  const nowMs = Date.now();
+
+  // 1) reveal_at gate
+  const revealAtMs = safeDateMs(link.reveal_at);
+  if (revealAtMs && nowMs < revealAtMs) {
+    return redirectTo(req, "/not-yet-available", {
+      until: new Date(revealAtMs).toISOString(),
+    });
+  }
+
+  // 2) delay_seconds gate (created_at + delay_seconds)
+  const delay = Number(link.delay_seconds || 0);
+  if (delay > 0) {
+    const createdAtMs = safeDateMs(link.created_at);
+    if (createdAtMs) {
+      const untilMs = createdAtMs + delay * 1000;
+      if (nowMs < untilMs) {
+        return redirectTo(req, "/not-yet-available", {
+          until: new Date(untilMs).toISOString(),
+        });
+      }
+    }
+  }
+
+  // 3) password gate (cookie-based)
+  if (link.password) {
+    const cookieName = `llpw_${token}`;
+    const cookieVal = cookies().get(cookieName)?.value;
+
+    if (cookieVal !== link.password) {
+      return redirectTo(req, "/password-required", { token });
+    }
+  }
+
+  // 4) Prefetch-like requests should NOT count clicks
+  if (isPrefetchLike(req)) {
+    return new NextResponse("OK", { status: 200 });
+  }
+
+  // 5) Atomic click count + resolve
+  const { data: resolved, error: rpcErr } = await sb.rpc("resolve_link", {
+    p_token: token,
+  });
+
+  const row = Array.isArray(resolved) ? resolved?.[0] : resolved;
+
+  if (rpcErr || !row || row.ok !== true || !row.target_url) {
+    return redirectTo(req, "/expired");
+  }
+
+  return NextResponse.redirect(row.target_url);
 }
