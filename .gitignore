@@ -44,3 +44,8 @@ next-env.d.ts
 *.zip
 *.rar
 *.7z
+
+# Archives
+*.zip
+*.rar
+*.7z
